@@ -8,6 +8,7 @@ import zipfile
 import urllib.request
 import shutil
 import time
+import sys
 
 from gui import DownloaderGUI
 
@@ -117,9 +118,9 @@ class YouTubeBulkDownloader:
         self.gui.close_ffmpeg_progress_window()
         self.gui.show_ffmpeg_error(error, self.ffmpeg_path)
     
-    def validate_urls(self, urls):
+    def validate_urls(self, urls, playlist_mode=False):
         valid_urls = []
-        youtube_pattern = re.compile(r'(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)')
+        youtube_pattern = re.compile(r'(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/playlist\?list=)')
         
         for url in urls:
             url = url.strip()
@@ -130,9 +131,9 @@ class YouTubeBulkDownloader:
                 
         return valid_urls
     
-    def start_download(self, urls_input, format_type, quality, download_path):
+    def start_download(self, urls_input, format_type, quality, download_path, playlist_mode=False, playlist_limit=10):
         urls = urls_input.split('\n')
-        valid_urls = self.validate_urls(urls)
+        valid_urls = self.validate_urls(urls, playlist_mode)
         
         if not valid_urls:
             messagebox.showwarning("No Valid URLs", "No valid YouTube URLs found.")
@@ -152,7 +153,7 @@ class YouTubeBulkDownloader:
         
         self.download_thread = threading.Thread(
             target=self.download_videos, 
-            args=(valid_urls, format_type, quality, download_path)
+            args=(valid_urls, format_type, quality, download_path, playlist_mode, playlist_limit)
         )
         self.download_thread.start()
     
@@ -250,14 +251,17 @@ class YouTubeBulkDownloader:
         elif d['status'] == 'error':
             self.root.after(0, lambda: self.gui.set_status("❌ Error occurred"))
     
-    def download_videos(self, urls, format_type, quality, download_path):
+    def download_videos(self, urls, format_type, quality, download_path, playlist_mode=False, playlist_limit=10):
         total_urls = len(urls)
         self.total_files = total_urls
         
         self.gui.log_message(f"{'='*50}")
         self.gui.log_message(f"📥 Starting bulk download")
         self.gui.log_message(f"   Format: {format_type.upper()}, Quality: {quality}")
-        self.gui.log_message(f"   Total files: {total_urls}")
+        self.gui.log_message(f"   Playlist mode: {'Enabled' if playlist_mode else 'Disabled'}")
+        if playlist_mode:
+            self.gui.log_message(f"   Playlist limit: {playlist_limit} videos")
+        self.gui.log_message(f"   Total URLs: {total_urls}")
         self.gui.log_message(f"{'='*50}")
         
         ffmpeg_location = None
@@ -270,14 +274,21 @@ class YouTubeBulkDownloader:
         
         common_opts = {
             'outtmpl': os.path.join(download_path, '%(title)s.%(ext)s'),
-            'noplaylist': True,
-            'ignoreerrors': False,
+            'noplaylist': not playlist_mode,
+            'ignoreerrors': True if playlist_mode else False,
             'nocheckcertificate': True,
             'geo_bypass': True,
             'quiet': True,
             'no_warnings': True,
+            'verbose': False,
             'progress_hooks': [self.progress_hook],
         }
+        
+        # Add playlist-specific options
+        if playlist_mode:
+            common_opts['outtmpl'] = os.path.join(download_path, '%(playlist_title)s', '%(title)s.%(ext)s')
+            common_opts['yes_playlist'] = True
+            common_opts['playlistend'] = playlist_limit
         
         if ffmpeg_location:
             common_opts['ffmpeg_location'] = ffmpeg_location
@@ -338,7 +349,7 @@ class YouTubeBulkDownloader:
                     total_size="--",
                     speed="--",
                     eta="--",
-                    title="Fetching video info...",
+                    title="Fetching video info..." if not playlist_mode else "Fetching playlist info...",
                     phase="fetching"
                 ))
                 
@@ -348,17 +359,42 @@ class YouTubeBulkDownloader:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     # Get info first
                     info = ydl.extract_info(url, download=False)
-                    self.current_title = info.get('title', 'Unknown') if info else 'Unknown'
-                    duration = info.get('duration', 0) if info else 0
                     
-                    self.gui.log_message(f"   Title: {self.current_title}")
-                    if duration:
-                        self.gui.log_message(f"   Duration: {self.format_time(duration)}")
+                    # Handle playlist info
+                    if playlist_mode and info and 'entries' in info:
+                        playlist_title = info.get('title', 'Unknown Playlist')
+                        playlist_count = min(len([e for e in info['entries'] if e]), playlist_limit)
+                        self.gui.log_message(f"   📋 Playlist: {playlist_title}")
+                        self.gui.log_message(f"   📁 Videos to download: {playlist_count}")
+                        self.current_title = f"Playlist: {playlist_title}"
+                        self.total_files = playlist_count
+                        self.current_file_index = 0
+                    else:
+                        self.current_title = info.get('title', 'Unknown') if info else 'Unknown'
+                        duration = info.get('duration', 0) if info else 0
+                        
+                        self.gui.log_message(f"   Title: {self.current_title}")
+                        if duration:
+                            self.gui.log_message(f"   Duration: {self.format_time(duration)}")
                     
-                    # Now download
-                    ydl.download([url])
+                    # Create a custom progress hook for playlists
+                    if playlist_mode:
+                        self.playlist_video_index = 0
+                        original_hook = self.progress_hook
+                        
+                        def playlist_progress_hook(d):
+                            if d['status'] == 'finished':
+                                self.playlist_video_index += 1
+                                self.current_file_index = self.playlist_video_index
+                            original_hook(d)
+                        
+                        ydl_opts['progress_hooks'] = [playlist_progress_hook]
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl_playlist:
+                            ydl_playlist.download([url])
+                    else:
+                        ydl.download([url])
                     
-                    if info:
+                    if info and not playlist_mode:
                         height = info.get('height', 'N/A')
                         width = info.get('width', 'N/A')
                         if height != 'N/A' and width != 'N/A':

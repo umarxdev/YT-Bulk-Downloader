@@ -67,6 +67,21 @@ class DownloaderGUI:
         ttk.Radiobutton(format_frame, text="📹 MP4 (Video)", variable=self.format_var, value="mp4").pack(side=tk.LEFT, padx=(0, 20))
         ttk.Radiobutton(format_frame, text="🎵 MP3 (Audio)", variable=self.format_var, value="mp3").pack(side=tk.LEFT)
         
+        # Playlist mode checkbox
+        ttk.Label(options_frame, text="Playlist:").grid(row=0, column=2, sticky=tk.W, padx=(30, 10))
+        self.playlist_var = tk.BooleanVar(value=False)
+        self.playlist_check = ttk.Checkbutton(options_frame, text="📋 Download entire playlist", variable=self.playlist_var, command=self.on_playlist_toggle)
+        self.playlist_check.grid(row=0, column=3, sticky=tk.W)
+        
+        # Playlist limit
+        self.playlist_limit_frame = ttk.Frame(options_frame)
+        self.playlist_limit_frame.grid(row=0, column=4, sticky=tk.W, padx=(10, 0))
+        ttk.Label(self.playlist_limit_frame, text="Max videos:").pack(side=tk.LEFT, padx=(0, 5))
+        self.playlist_limit_var = tk.StringVar(value="10")
+        self.playlist_limit_spin = ttk.Spinbox(self.playlist_limit_frame, from_=1, to=9999, width=6, textvariable=self.playlist_limit_var)
+        self.playlist_limit_spin.pack(side=tk.LEFT)
+        self.playlist_limit_frame.grid_remove()  # Hidden by default
+        
         # Quality selection
         ttk.Label(options_frame, text="Quality:").grid(row=1, column=0, sticky=tk.W, padx=(0, 10), pady=(10, 0))
         quality_frame = ttk.Frame(options_frame)
@@ -192,6 +207,13 @@ class DownloaderGUI:
         self.eta_var.set("ETA: --")
         self.size_var.set("Size: --")
     
+    def on_playlist_toggle(self):
+        """Show/hide playlist limit when playlist mode is toggled"""
+        if self.playlist_var.get():
+            self.playlist_limit_frame.grid()
+        else:
+            self.playlist_limit_frame.grid_remove()
+    
     def on_quality_change(self, event=None):
         """Update quality description when selection changes"""
         descriptions = {
@@ -217,11 +239,14 @@ class DownloaderGUI:
         self.reset_progress()
         
         if self.callbacks.get('start_download'):
+            playlist_limit = int(self.playlist_limit_var.get()) if self.playlist_var.get() else 0
             self.callbacks['start_download'](
                 urls_input,
                 self.format_var.get(),
                 self.quality_var.get(),
-                self.path_var.get()
+                self.path_var.get(),
+                self.playlist_var.get(),
+                playlist_limit
             )
     
     def on_stop_download(self):
